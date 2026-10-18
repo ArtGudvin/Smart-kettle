@@ -1,0 +1,1089 @@
+
+esphome:
+  name: smart-kettle
+  friendly_name: Smart kettle
+
+esp32:
+  variant: ESP32S2
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "..."
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  manual_ip:
+    static_ip: ...
+    gateway: ...
+    subnet: ...
+    dns1: ...
+    
+  ap:
+    ssid: smart kettle ke Fallback Hotspot
+    password: "..."
+
+captive_portal:
+
+  
+web_server:
+  version: "3"
+
+# ============================================================
+# TIME
+# ============================================================
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "UTC-3"
+
+
+# ============================================================
+# GLOBALS
+# ============================================================
+
+globals:
+
+  # ----------------------------------------------------------
+  # TARE OFFSET
+  # ----------------------------------------------------------
+
+  - id: tare_offset
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+
+
+  # ----------------------------------------------------------
+  # TARGET TEMPERATURE
+  # ----------------------------------------------------------
+
+  - id: target_temperature
+    type: int
+    restore_value: false
+    initial_value: '99'
+
+
+# ============================================================
+# ESP32 TOUCH
+# ============================================================
+
+esp32_touch:
+  setup_mode: false
+
+  measurement_duration: 0.25ms
+  sleep_duration: 0.5ms
+
+
+# ============================================================
+# SPI DISPLAY
+# ============================================================
+
+spi:
+  clk_pin: GPIO36
+  mosi_pin: GPIO35
+  interface: hardware
+
+
+# ============================================================
+# FONTS
+# ============================================================
+
+font:
+
+  # ----------------------------------------------------------
+  # TIME
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Roboto"
+    id: font_time
+    size: 20
+
+
+  # ----------------------------------------------------------
+  # MAIN TEMPERATURE
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Roboto"
+    id: font_temperature
+    size: 46
+
+
+  # ----------------------------------------------------------
+  # SET TEMPERATURE
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Roboto"
+    id: font_set
+    size: 15
+
+
+  # ----------------------------------------------------------
+  # WEIGHT
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Roboto"
+    id: font_weight
+    size: 16
+
+
+  # ----------------------------------------------------------
+  # ИКОНКИ (мелкие) — WiFi
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Material Icons"
+    id: font_icons
+    size: 16
+    glyphs:
+      - "\uE63E"   # WiFi
+      - "\uE648"   # WiFi off
+
+  # ----------------------------------------------------------
+  # ИКОНКА ОГНЯ (крупная)
+  # ----------------------------------------------------------
+
+  - file: "gfonts://Material Icons"
+    id: font_fire
+    size: 32
+    glyphs:
+      - "\uE80E"   # Whatshot / heating
+
+
+# ============================================================
+# DISPLAY
+# ============================================================
+
+display:
+
+  - platform: mipi_spi
+    id: kettle_display
+    model: ST7735
+
+    cs_pin: GPIO34
+    dc_pin: GPIO21
+    reset_pin: GPIO40
+
+    data_rate: 10MHz
+    spi_mode: MODE0
+
+    update_interval: 1s
+
+    color_order: bgr
+    rotation: 180
+
+    dimensions:
+      width: 128
+      height: 115
+
+#      offset_width: 2
+#      offset_height: 0
+
+      pad_width: 2
+      pad_height: 16
+
+
+    lambda: |-
+      const int Y_OFF = 4; 
+      // ====================================================
+      // BACKGROUND
+      // ====================================================
+
+      // Чёрный фон
+      it.fill(Color(0, 0, 0));
+
+      // Уровень воды
+      float water = id(weight).state;
+      if (isnan(water)) water = 0.0f;
+
+      // 5 фиксированных уровней
+      int water_top;
+
+      if (water < 0.4f) {
+        water_top = 92;       // 0–0.4 л
+      } else if (water < 0.8f) {
+        water_top = 69;       // 0.4–0.8 л
+      } else if (water < 1.2f) {
+        water_top = 46;       // 0.8–1.2 л
+      } else if (water < 1.6f) {
+        water_top = 23;       // 1.2–1.6 л
+      } else {
+        water_top = 2;        // 1.6–2.0 л
+      }
+
+      // Заполняем воду
+      if (water > 0.0f) {
+        it.filled_rectangle(
+          0, water_top+Y_OFF,
+          128, 115 - water_top,
+          Color(0, 90, 220)
+        );
+
+        // Статичная волна на поверхности
+        for (int x = 0; x < 128; x++) {
+          int wave = (int)(2.0f * sin(x * 0.12f));
+
+          it.line(
+            x,
+            water_top + wave +Y_OFF,
+            x,
+            water_top + wave + 2 +Y_OFF,
+            Color(70, 170, 255)
+          );
+        }
+      }
+
+
+      // ====================================================
+      // TIME
+      // ====================================================
+
+      auto now = id(sntp_time).now();
+
+      if (now.is_valid()) {
+
+        it.strftime(
+          64,
+          4+Y_OFF,
+          id(font_time),
+          Color(255, 255, 255),
+          TextAlign::TOP_CENTER,
+          "%H:%M",
+          now
+        );
+
+      } else {
+
+        it.print(
+          64,
+          4+Y_OFF,
+          id(font_time),
+          Color(100, 100, 100),
+          TextAlign::TOP_CENTER,
+          "--:--"
+        );
+      }
+
+
+      // ====================================================
+      // WIFI ICON
+      // ====================================================
+
+      if (wifi::global_wifi_component->is_connected()) {
+
+        it.print(
+          110,
+          7+Y_OFF,
+          id(font_icons),
+          Color(255, 255, 255),
+          TextAlign::TOP_RIGHT,
+          "\uE63E"
+        );
+
+      } else {
+
+        it.print(
+          110,
+          7+Y_OFF,
+          id(font_icons),
+          Color(100, 100, 100),
+          TextAlign::TOP_RIGHT,
+          "\uE648"
+        );
+      }
+
+
+      // ====================================================
+      // CURRENT TEMPERATURE
+      // ====================================================
+
+      if (isnan(id(kettle_temperature).state)) {
+
+        it.print(
+          64,
+          60+Y_OFF,
+          id(font_temperature),
+          Color(255, 255, 255),
+          TextAlign::CENTER,
+          "--"
+        );
+
+      } else {
+
+        float temperature = id(kettle_temperature).state;
+
+        if (temperature < 0)
+          temperature = 0;
+
+        if (temperature > 99)
+          temperature = 99;
+
+
+        // --------------------------------------------------
+        // ЦВЕТ ТЕМПЕРАТУРЫ
+        //
+        // < 60°C  = белый
+        // 60–79°C = жёлтый
+        // 80–99°C = оранжевый
+        // --------------------------------------------------
+
+        Color temperature_color;
+
+        if (temperature >= 80) {
+          temperature_color = Color(255, 140, 0);
+        } else if (temperature >= 60) {
+          temperature_color = Color(255, 220, 0);
+        } else {
+          temperature_color = Color(255, 255, 255);
+        }
+
+
+        // --------------------------------------------------
+        // ЧИСЛО
+        // --------------------------------------------------
+
+        it.printf(
+          64,
+          60+Y_OFF,
+          id(font_temperature),
+          temperature_color,
+          TextAlign::CENTER,
+          "%.0f",
+          temperature
+        );
+
+
+        // --------------------------------------------------
+        // СИМВОЛ ГРАДУСА
+        // --------------------------------------------------
+
+        it.print(
+          91,
+          60+Y_OFF,
+          id(font_temperature),
+          temperature_color,
+          TextAlign::CENTER_LEFT,
+          "°"
+        );
+      }
+
+
+      // ====================================================
+      // SET TEMPERATURE
+      // ====================================================
+
+      it.printf(
+        64,
+        103+Y_OFF,
+        id(font_set),
+        Color(255, 255, 255),
+        TextAlign::CENTER,
+        "SET %d",
+        id(target_temperature)
+      );
+
+
+      // ====================================================
+      // HEATING SYMBOL
+      // ====================================================
+
+      if (id(kettle_relay).state) {
+
+        it.print(
+          20,
+          60+Y_OFF,
+          id(font_fire),
+          Color(255, 140, 0),
+          TextAlign::CENTER,
+          "\uE80E"
+        );
+      }
+
+
+# ============================================================
+# HOME ASSISTANT TARGET TEMPERATURE
+# ============================================================
+
+number:
+
+  - platform: template
+    id: target_temperature_ha
+    name: "Target Temperature"
+    icon: "mdi:thermometer"
+    min_value: 1
+    max_value: 99
+    step: 1
+    initial_value: 99
+    restore_value: false
+    optimistic: true
+    mode: box
+
+    set_action:
+
+      - lambda: |-
+          id(target_temperature) = (int)x;
+
+          if ((int)x == 99) {
+            id(mode_led).turn_off();
+          } else {
+            id(mode_led).turn_on();
+          }
+
+
+# ============================================================
+# BUZZER OUTPUT
+# ============================================================
+
+output:
+
+  - platform: ledc
+    id: buzzer_pwm
+    pin: GPIO7
+    frequency: 2000Hz
+
+
+# ============================================================
+# SWITCHES
+# ============================================================
+
+switch:
+
+  # ==========================================================
+  # MAIN KETTLE RELAY
+  #
+  # GPIO1
+  #
+  # Основной нагрев.
+  # ==========================================================
+
+  - platform: gpio
+    id: kettle_relay
+    name: "Relay heating"
+
+    pin:
+      number: GPIO1
+      inverted: false
+
+    restore_mode: ALWAYS_OFF
+
+
+    # --------------------------------------------------------
+    # RELAY ON
+    # --------------------------------------------------------
+
+    on_turn_on:
+
+      - switch.turn_on: heating_led
+
+
+    # --------------------------------------------------------
+    # RELAY OFF
+    # --------------------------------------------------------
+
+    on_turn_off:
+
+      - switch.turn_off: heating_led
+
+      # При выключении основного нагрева
+      # SCR также отключается.
+      - switch.turn_off: scr_ctrl
+
+
+  # ==========================================================
+  # SCR CONTROL
+  #
+  # GPIO5
+  # ==========================================================
+
+  - platform: gpio
+    id: scr_ctrl
+    name: "SCR heating"
+
+    pin:
+      number: GPIO5
+      inverted: false
+
+    restore_mode: ALWAYS_OFF
+
+
+  # ==========================================================
+  # HEATING LED
+  #
+  # GPIO17
+  # ==========================================================
+
+  - platform: gpio
+    id: heating_led
+    name: "LED heating"
+    internal: true
+
+    pin:
+      number: GPIO17
+      inverted: true
+
+    restore_mode: ALWAYS_OFF
+
+
+  # ==========================================================
+  # MODE LED
+  #
+  # GPIO12
+  #
+  # Включается для режимов кроме 99°C.
+  # ==========================================================
+
+  - platform: gpio
+    id: mode_led
+    name: "LED mode"
+    internal: true
+
+    pin:
+      number: GPIO12
+      inverted: true
+
+    restore_mode: ALWAYS_OFF
+
+
+  # ==========================================================
+  # DISPLAY BACKLIGHT
+  #
+  # GPIO2
+  # ==========================================================
+
+  - platform: gpio
+    id: display_backlight
+    name: "Display Backlight"
+
+    pin: GPIO2
+
+    restore_mode: ALWAYS_ON
+
+
+# ============================================================
+# BUZZER SCRIPTS
+# ============================================================
+
+script:
+
+  # ==========================================================
+  # NORMAL BUTTON BEEP
+  # ==========================================================
+
+  - id: button_beep
+    mode: restart
+
+    then:
+
+      # Возвращаем обычную частоту
+      - output.ledc.set_frequency:
+          id: buzzer_pwm
+          frequency: 2000Hz
+
+      - output.set_level:
+          id: buzzer_pwm
+          level: 50%
+
+      - delay: 120ms
+
+      - output.turn_off: buzzer_pwm
+
+
+  # ==========================================================
+  # ERROR BEEP
+  #
+  # Два коротких сигнала
+  # ==========================================================
+
+  - id: error_beep
+    mode: restart
+
+    then:
+
+      - output.ledc.set_frequency:
+          id: buzzer_pwm
+          frequency: 2000Hz
+
+      # Первый сигнал
+      - output.set_level:
+          id: buzzer_pwm
+          level: 50%
+      - delay: 100ms
+      - output.turn_off: buzzer_pwm
+
+      # Пауза
+      - delay: 100ms
+
+      # Второй сигнал
+      - output.set_level:
+          id: buzzer_pwm
+          level: 50%
+      - delay: 100ms
+      - output.turn_off: buzzer_pwm
+
+
+  # ==========================================================
+  # HEATING FINISHED
+  #
+  # Три ноты с повышением частоты
+  # ==========================================================
+
+  - id: heating_done_beep
+    mode: restart
+
+    then:
+
+      # ------------------------------------------------------
+      # Нота 1
+      # ------------------------------------------------------
+
+      - output.ledc.set_frequency:
+          id: buzzer_pwm
+          frequency: 1200Hz
+      - output.set_level:
+          id: buzzer_pwm
+          level: 80%
+      - delay: 150ms
+      - output.turn_off: buzzer_pwm
+      - delay: 70ms
+
+
+      # ------------------------------------------------------
+      # Нота 2
+      # ------------------------------------------------------
+
+      - output.ledc.set_frequency:
+          id: buzzer_pwm
+          frequency: 1600Hz
+      - output.set_level:
+          id: buzzer_pwm
+          level: 80%
+      - delay: 150ms
+      - output.turn_off: buzzer_pwm
+      - delay: 70ms
+
+      # ------------------------------------------------------
+      # Нота 3
+      # ------------------------------------------------------
+
+      - output.ledc.set_frequency:
+          id: buzzer_pwm
+          frequency: 2200Hz
+      - output.set_level:
+          id: buzzer_pwm
+          level: 80%
+      - delay: 350ms
+      - output.turn_off: buzzer_pwm
+
+
+# ============================================================
+# TOUCH BUTTONS
+# ============================================================
+
+binary_sensor:
+
+  # ==========================================================
+  # TOUCH GPIO4
+  #
+  # ВКЛ / ВЫКЛ НАГРЕВА
+  # ==========================================================
+
+  - platform: esp32_touch
+    id: touch_heating
+    name: "Touch heating"
+    pin: GPIO4
+    threshold: 800
+
+    on_press:
+
+      then:
+
+        # ----------------------------------------------------
+        # ЕСЛИ НАГРЕВ УЖЕ ВКЛЮЧЕН
+        #
+        # -> ВЫКЛЮЧАЕМ РЕЛЕ
+        # ----------------------------------------------------
+
+        - if:
+
+            condition:
+              switch.is_on: kettle_relay
+
+            then:
+
+              - script.execute: button_beep
+
+              - switch.turn_off: kettle_relay
+
+
+            else:
+
+              # ------------------------------------------------
+              # НАГРЕВ ВЫКЛЮЧЕН
+              #
+              # Проверяем текущую температуру.
+              # ------------------------------------------------
+
+              - if:
+
+                  condition:
+                    lambda: |-
+                      return !isnan(id(kettle_temperature).state) &&
+                             id(kettle_temperature).state < id(target_temperature);
+
+                  then:
+
+                    # ------------------------------------------
+                    # ТЕМПЕРАТУРА НИЖЕ SET
+                    #
+                    # Можно включать нагрев.
+                    # ------------------------------------------
+
+                    - script.execute: button_beep
+
+                    - switch.turn_on: kettle_relay
+
+
+                  else:
+
+                    # ------------------------------------------
+                    # ТЕМПЕРАТУРА УЖЕ ДОСТИГЛА SET
+                    #
+                    # Нагрев НЕ включаем.
+                    # Два коротких сигнала.
+                    # ------------------------------------------
+
+                    - script.execute: error_beep
+
+
+  # ==========================================================
+  # TOUCH GPIO11
+  #
+  # Локальное переключение:
+  #
+  # 40 -> 60 -> 80 -> 99 -> 40
+  #
+  # ==========================================================
+
+  - platform: esp32_touch
+    id: touch_mode
+    name: "Touch mode"
+    pin: GPIO11
+    threshold: 800
+
+    on_press:
+
+      then:
+
+        # ----------------------------------------------------
+        # BEEP
+        # ----------------------------------------------------
+
+        - script.execute: button_beep
+
+
+        # ----------------------------------------------------
+        # СЛЕДУЮЩАЯ ТЕМПЕРАТУРА
+        # ----------------------------------------------------
+
+        - lambda: |-
+
+            if (id(target_temperature) == 40) {
+
+              id(target_temperature) = 60;
+
+            } else if (id(target_temperature) == 60) {
+
+              id(target_temperature) = 80;
+
+            } else if (id(target_temperature) == 80) {
+
+              id(target_temperature) = 99;
+
+            } else {
+
+              id(target_temperature) = 40;
+            }
+
+
+        # ----------------------------------------------------
+        # СИНХРОНИЗИРУЕМ С HOME ASSISTANT
+        # ----------------------------------------------------
+
+        - number.set:
+            id: target_temperature_ha
+            value: !lambda |-
+              return id(target_temperature);
+
+
+        # ----------------------------------------------------
+        # LED РЕЖИМОВ
+        #
+        # Кроме 99°C
+        # ----------------------------------------------------
+
+        - if:
+            condition:
+              lambda: |-
+                return id(target_temperature) != 99;
+
+            then:
+              - switch.turn_on: mode_led
+
+            else:
+              - switch.turn_off: mode_led
+
+        # ----------------------------------------------------
+        # ЕСЛИ ТЕМПЕРАТУРА УЖЕ ДОСТИГЛА
+        # НОВОГО SETPOINT
+        # ----------------------------------------------------
+
+        - if:
+
+            condition:
+              lambda: |-
+                return !isnan(id(kettle_temperature).state) &&
+                       id(kettle_temperature).state >= id(target_temperature);
+
+            then:
+
+              - switch.turn_off: kettle_relay
+              - switch.turn_off: scr_ctrl
+
+
+# ============================================================
+# SENSORS
+# ============================================================
+
+sensor:
+
+  # ==========================================================
+  # HX711 WEIGHT
+  # ==========================================================
+
+  - platform: hx711
+    id: weight
+    name: "Weight"
+
+    dout_pin: GPIO16
+    clk_pin: GPIO18
+
+    gain: 128
+
+    update_interval: 1s
+
+    unit_of_measurement: kg
+    accuracy_decimals: 3
+
+    filters:
+
+      # ------------------------------------------------------
+      # КАЛИБРОВКА
+      # ------------------------------------------------------
+
+      - calibrate_linear:
+
+          - -506600 -> 0
+          - 930750 -> 5
+
+
+      # ------------------------------------------------------
+      # TARE
+      # ------------------------------------------------------
+
+      - lambda: |-
+          return x - id(tare_offset);
+
+
+      # ------------------------------------------------------
+      # FILTER
+      # ------------------------------------------------------
+
+      - sliding_window_moving_average:
+
+          window_size: 10
+          send_every: 5
+
+
+  # ==========================================================
+  # NTC VOLTAGE
+  # ==========================================================
+
+  - platform: adc
+    id: ntc_voltage
+    #name: "NTC Voltage"
+    internal: true          
+    
+    pin: GPIO9
+
+    attenuation: 12db
+
+    update_interval: 1s
+
+    filters:
+
+      - median:
+          window_size: 11
+          send_every: 5
+
+
+  # ==========================================================
+  # NTC RESISTANCE
+  # ==========================================================
+
+  - platform: resistance
+    id: ntc_resistance
+    #name: "NTC Resistance"
+    internal: true
+
+    sensor: ntc_voltage
+
+    configuration: UPSTREAM
+
+    resistor: 22kOhm
+    reference_voltage: 3.3V
+
+
+  # ==========================================================
+  # KETTLE TEMPERATURE
+  # ==========================================================
+
+  - platform: ntc
+    id: kettle_temperature
+    name: "Temperature"
+
+    sensor: ntc_resistance
+
+    calibration:
+      b_constant: 4000
+      reference_temperature: 25°C
+      reference_resistance: 100kOhm
+
+
+    # --------------------------------------------------------
+    # ДОСТИГНУТА УСТАНОВЛЕННАЯ ТЕМПЕРАТУРА
+    #
+    # Сигнал окончания нагрева срабатывает только если
+    # реле действительно было включено.
+    # --------------------------------------------------------
+
+    on_value:
+
+      then:
+
+        - if:
+
+            condition:
+              lambda: |-
+                return !isnan(x) &&
+                       x >= id(target_temperature) &&
+                       id(kettle_relay).state;
+
+            then:
+
+              # Сначала выключаем нагрев
+              - switch.turn_off: kettle_relay
+
+              - switch.turn_off: scr_ctrl
+
+              # Затем проигрываем сигнал окончания
+              - script.execute: heating_done_beep
+
+
+    # --------------------------------------------------------
+    # АВАРИЙНОЕ ОТКЛЮЧЕНИЕ > 99°C
+    # --------------------------------------------------------
+
+    on_value_range:
+
+      - above: 99.0
+
+        then:
+
+          - switch.turn_off: kettle_relay
+          - switch.turn_off: scr_ctrl
+
+
+  # ==========================================================
+  # ZERO CROSS / MAINS FREQUENCY
+  #
+  # GPIO3
+  # ==========================================================
+
+  - platform: pulse_counter
+    id: zero_frequency
+    name: "Power supply frequency"
+
+    pin:
+      number: GPIO3
+
+    use_pcnt: true
+
+    count_mode:
+      rising_edge: INCREMENT
+      falling_edge: DISABLE
+
+    update_interval: 10s
+
+    unit_of_measurement: "Hz"
+    accuracy_decimals: 1
+
+    filters:
+
+      # pulse_counter выдаёт pulses/min
+      # переводим в Hz
+
+      - multiply: 0.016666667
+
+
+# ============================================================
+# TARE BUTTON
+# ============================================================
+
+button:
+
+  - platform: template
+    name: "Weight reset"
+
+    on_press:
+
+      then:
+
+        - lambda: |-
+            id(tare_offset) =
+              id(weight).state +
+              id(tare_offset);
+
+
+# ============================================================
+# HEATING MODE TEXT SENSOR
+# ============================================================
+
+text_sensor:
+
+  - platform: template
+    name: "Heating mode"
+    id: heating_mode
+
+    update_interval: 1s
+
+    lambda: |-
+
+      char buffer[16];
+
+      snprintf(
+        buffer,
+        sizeof(buffer),
+        "%d °C",
+        id(target_temperature)
+      );
+
+      return {buffer};
